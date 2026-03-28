@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>นับสต๊อก · Scanner</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
@@ -107,9 +107,7 @@
   #reader video { border-radius: 0 !important; }
   #reader img { display: none !important; }
 
-  /* Override html5-qrcode styles */
-  #reader__scan_region { background: transparent !important; }
-  #reader__dashboard { display: none !important; }
+  /* Scanner region */
 
   .scan-overlay {
     position: absolute;
@@ -157,6 +155,79 @@
     color: var(--muted);
     font-size: 13px;
     padding: 10px 0 4px;
+  }
+
+  .torch-btn {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.3);
+    background: rgba(0,0,0,0.5);
+    color: white;
+    font-size: 22px;
+    cursor: pointer;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    backdrop-filter: blur(4px);
+  }
+  .torch-btn.on {
+    background: rgba(255,215,64,0.85);
+    border-color: var(--yellow);
+    box-shadow: 0 0 16px rgba(255,215,64,0.6);
+  }
+
+  .zoom-bar-wrap {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px 4px;
+  }
+  .zoom-bar-wrap.show { display: flex; }
+  .zoom-label { font-size: 12px; color: var(--muted); white-space: nowrap; min-width: 36px; }
+  .zoom-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 4px;
+    background: var(--border);
+    outline: none;
+  }
+  .zoom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(0,212,255,0.5);
+  }
+  .zoom-btns {
+    display: flex;
+    gap: 6px;
+    padding: 0 16px 10px;
+  }
+  .zoom-preset {
+    flex: 1;
+    padding: 6px 0;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: 'Sarabun', sans-serif;
+    transition: all 0.15s;
+  }
+  .zoom-preset.active {
+    background: rgba(0,212,255,0.15);
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   /* ── RESULT CARD ── */
@@ -644,13 +715,26 @@
       <div class="cam-text">กดเพื่อเปิดกล้อง</div>
       <div class="cam-sub">รองรับ QR Code และ Barcode<br>ทุกรูปแบบ</div>
     </div>
-    <div id="reader" style="display:none"></div>
+    <video id="reader" style="display:none;width:100%;height:260px;object-fit:cover" playsinline></video>
+    <canvas id="reader-canvas" style="display:none"></canvas>
     <div class="scan-overlay" id="scan-overlay" style="display:none">
       <div class="scan-frame">
         <span></span>
         <div class="scan-line"></div>
       </div>
     </div>
+    <button class="torch-btn" id="torch-btn" style="display:none" onclick="toggleTorch()">🔦</button>
+  </div>
+  <!-- Zoom controls -->
+  <div class="zoom-bar-wrap" id="zoom-wrap">
+    <span class="zoom-label" id="zoom-val">1×</span>
+    <input class="zoom-slider" id="zoom-slider" type="range" min="1" max="5" step="0.1" value="1" oninput="applyZoom(this.value)">
+  </div>
+  <div class="zoom-btns" id="zoom-btns" style="display:none">
+    <button class="zoom-preset active" onclick="setZoom(1,this)">1×</button>
+    <button class="zoom-preset" onclick="setZoom(1.5,this)">1.5×</button>
+    <button class="zoom-preset" onclick="setZoom(2,this)">2×</button>
+    <button class="zoom-preset" onclick="setZoom(3,this)">3×</button>
   </div>
   <div class="scan-hint" id="scan-hint" style="display:none">🔍 จ่อ QR / Barcode ให้อยู่ในกรอบ</div>
 
@@ -658,7 +742,16 @@
   <div class="result-card" id="result-card">
     <div class="result-code" id="r-code">—</div>
     <div class="result-name" id="r-name">—</div>
-    <div class="result-meta">
+
+    <!-- ช่องกรอกชื่อ เมื่อไม่พบในระบบ -->
+    <div id="r-custom-wrap" style="display:none;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;color:var(--yellow);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">⚠️ ไม่พบในระบบ — กรอกชื่อสินค้า</div>
+      <input id="r-custom-name" type="text" placeholder="ชื่อสินค้า (เพื่อนับทีหลัง)..."
+        style="width:100%;background:var(--surface);border:1px solid var(--yellow);border-radius:12px;padding:11px 14px;color:var(--text);font-family:'Sarabun',sans-serif;font-size:15px;outline:none;">
+      <div style="font-size:11px;color:var(--muted);margin-top:5px">📝 จะบันทึกเป็น "รายการนอกระบบ" เพื่อปรับยอดทีหลัง</div>
+    </div>
+
+    <div class="result-meta" id="r-meta">
       <div class="meta-pill">UOM: <span id="r-cat">—</span></div>
       <div class="meta-pill">ระบบ: <span id="r-sys">—</span></div>
     </div>
@@ -756,6 +849,15 @@ B001,นมกล่อง,เครื่องดื่ม,120"></textarea>
       <div class="em-icon">📦</div>
       <div class="em-text">ยังไม่มีรายการ<br>ไปที่แท็บ "นำเข้า" เพื่อโหลดข้อมูลสินค้า</div>
     </div>
+  </div>
+
+  <!-- Unknown products -->
+  <div id="unknown-section" style="display:none;margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div class="section-label" style="margin:0;color:var(--yellow)">⚠️ รายการนอกระบบ (ปรับทีหลัง)</div>
+      <button onclick="clearUnknown()" style="background:none;border:none;color:var(--red);font-size:12px;cursor:pointer;font-family:'Sarabun',sans-serif">ล้าง</button>
+    </div>
+    <div class="table-wrap" id="unknown-table"></div>
   </div>
 </div>
 
@@ -867,8 +969,11 @@ const EMBEDDED_BC_TO_SKU = {"8850678305066": "110100350112", "8850678305073": "1
 // ─────────────────────────────────────────
 let products = [];
 let counts   = {};
-let scanner  = null;
+let unknownCounts = {}; // { barcode: { code, name, qty } }
+
 let scanning = false;
+let torchOn  = false;
+let currentTrack = null;
 let currentProduct = null;
 let currentUser = '';
 let currentZone = '';
@@ -890,6 +995,8 @@ try {
   const u = localStorage.getItem('stock_user');
   const z = localStorage.getItem('stock_zone');
   if (c) counts   = JSON.parse(c);
+  const u2 = localStorage.getItem('stock_unknown');
+  if (u2) unknownCounts = JSON.parse(u2);
   if (u) currentUser = u;
   if (z) currentZone = z;
 } catch(e) {}
@@ -967,42 +1074,130 @@ function switchTab(tab) {
 }
 
 // ─────────────────────────────────────────
-// CAMERA / SCANNER
+// CAMERA / SCANNER (ZXing)
 // ─────────────────────────────────────────
-function startCamera() {
+let videoStream  = null;
+let scanInterval = null;
+let zxingReader  = null;
+let currentZoom  = 1;
+let maxZoom      = 5;
+
+async function startCamera() {
   document.getElementById('cam-start').style.display = 'none';
-  document.getElementById('reader').style.display = 'block';
   document.getElementById('scan-overlay').style.display = 'flex';
   document.getElementById('scan-hint').style.display = 'block';
   document.getElementById('manual-fallback').style.display = 'none';
+  document.getElementById('torch-btn').style.display = 'flex';
 
-  scanner = new Html5Qrcode('reader');
-  scanner.start(
-    { facingMode: 'environment' },
-    { fps: 12, qrbox: { width: 200, height: 200 }, aspectRatio: 1.0 },
-    onScanSuccess,
-    () => {}
-  ).catch(err => {
-    showToast('ไม่สามารถเปิดกล้องได้: ' + err, 'err');
+  const video = document.getElementById('reader');
+  video.style.display = 'block';
+
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        focusMode: 'continuous',
+        advanced: [{ focusMode: 'continuous' }]
+      }
+    });
+    video.srcObject = videoStream;
+    await video.play();
+    scanning = true;
+    currentTrack = videoStream.getVideoTracks()[0];
+
+    // Check zoom capability
+    const caps = currentTrack.getCapabilities();
+    if (caps.zoom) {
+      maxZoom = Math.min(caps.zoom.max, 8);
+      document.getElementById('zoom-wrap').classList.add('show');
+      document.getElementById('zoom-btns').style.display = 'flex';
+      document.getElementById('zoom-slider').max = maxZoom;
+    }
+
+    // Init ZXing
+    if (!zxingReader) {
+      zxingReader = new ZXing.BrowserMultiFormatReader(null, {
+        delayBetweenScanAttempts: 80,
+        delayBetweenScanSuccess: 500
+      });
+    }
+
+    // Scan loop using canvas
+    const canvas = document.getElementById('reader-canvas');
+    const ctx = canvas.getContext('2d');
+    scanInterval = setInterval(async () => {
+      if (!scanning || currentProduct) return;
+      try {
+        canvas.width  = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const result = await zxingReader.decodeFromCanvas(canvas);
+        if (result) onScanSuccess(result.getText());
+      } catch(e) { /* not found yet */ }
+    }, 100);
+
+  } catch(err) {
+    showToast('ไม่สามารถเปิดกล้องได้', 'err');
     resetCamera();
-  });
-  scanning = true;
+  }
 }
 
 function stopCamera() {
-  if (scanner && scanning) {
-    scanner.stop().catch(() => {});
-    scanning = false;
-  }
+  scanning = false;
+  if (scanInterval) { clearInterval(scanInterval); scanInterval = null; }
+  if (videoStream)  { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
+  currentTrack = null;
 }
 
 function resetCamera() {
   stopCamera();
+  torchOn = false;
+  currentZoom = 1;
+  const video = document.getElementById('reader');
+  video.style.display = 'none';
+  video.srcObject = null;
   document.getElementById('cam-start').style.display = 'flex';
-  document.getElementById('reader').style.display = 'none';
   document.getElementById('scan-overlay').style.display = 'none';
   document.getElementById('scan-hint').style.display = 'none';
+  document.getElementById('torch-btn').style.display = 'none';
+  document.getElementById('torch-btn').classList.remove('on');
+  document.getElementById('zoom-wrap').classList.remove('show');
+  document.getElementById('zoom-btns').style.display = 'none';
+  document.getElementById('zoom-slider').value = 1;
+  document.getElementById('zoom-val').textContent = '1×';
+  document.querySelectorAll('.zoom-preset').forEach((b,i) => b.classList.toggle('active', i===0));
   document.getElementById('manual-fallback').style.display = 'block';
+}
+
+async function applyZoom(val) {
+  currentZoom = parseFloat(val);
+  document.getElementById('zoom-val').textContent = currentZoom.toFixed(1) + '×';
+  if (currentTrack) {
+    try { await currentTrack.applyConstraints({ advanced: [{ zoom: currentZoom }] }); } catch(e) {}
+  }
+}
+
+function setZoom(val, btn) {
+  document.getElementById('zoom-slider').value = val;
+  document.querySelectorAll('.zoom-preset').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyZoom(val);
+}
+
+async function toggleTorch() {
+  const btn = document.getElementById('torch-btn');
+  if (!currentTrack) { showToast('เปิดกล้องก่อนนะ', 'warn'); return; }
+  try {
+    torchOn = !torchOn;
+    await currentTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
+    btn.classList.toggle('on', torchOn);
+    btn.textContent = torchOn ? '💡' : '🔦';
+  } catch(e) {
+    torchOn = !torchOn;
+    showToast('มือถือนี้ไม่รองรับไฟฉาย', 'warn');
+  }
 }
 
 function onScanSuccess(code) {
@@ -1029,12 +1224,17 @@ function lookupCode(code) {
     // Try matching any barcode in products array
     prod = products.find(p => p.barcodes && p.barcodes.includes(code));
   }
-  currentProduct = prod || { code, name: '(ไม่พบในระบบ)', category: '—', systemQty: '—' };
+  currentProduct = prod || { code, name: '', category: '—', systemQty: '—', unknown: true };
 
+  const isUnknown = !prod;
   document.getElementById('r-code').textContent = currentProduct.code || code;
-  document.getElementById('r-name').textContent = currentProduct.name;
+  document.getElementById('r-name').textContent = isUnknown ? '(ไม่พบในระบบ)' : currentProduct.name;
+  document.getElementById('r-name').style.color = isUnknown ? 'var(--yellow)' : 'var(--text)';
   document.getElementById('r-cat').textContent  = currentProduct.category || '—';
   document.getElementById('r-sys').textContent  = currentProduct.systemQty !== undefined ? currentProduct.systemQty : '—';
+  document.getElementById('r-custom-wrap').style.display = isUnknown ? 'block' : 'none';
+  document.getElementById('r-meta').style.display = isUnknown ? 'none' : 'flex';
+  document.getElementById('r-custom-name').value = '';
 
   const prevCount = counts[code];
   document.getElementById('qty-input').value = prevCount !== undefined ? prevCount : 1;
@@ -1071,14 +1271,27 @@ function adjustQty(delta) {
 function saveCount() {
   if (!currentProduct) return;
   const qty = parseInt(document.getElementById('qty-input').value) || 0;
-  counts[currentProduct.code] = qty;  // always save by SKU
-  save();
 
-  const diff = isNaN(parseInt(currentProduct.systemQty)) ? null : qty - parseInt(currentProduct.systemQty);
-  if (diff === null) showToast('💾 บันทึกแล้ว', 'ok');
-  else if (diff === 0) showToast('✅ ยอดตรง! บันทึกแล้ว', 'ok');
-  else showToast(`⚠️ ต่าง ${diff > 0 ? '+' : ''}${diff} ชิ้น — บันทึกแล้ว`, 'warn');
-
+  // If unknown product, grab custom name
+  if (currentProduct.unknown) {
+    const customName = document.getElementById('r-custom-name').value.trim();
+    currentProduct.name = customName || '(ไม่ระบุชื่อ)';
+    currentProduct.systemQty = '—';
+    // Store in unknownProducts list
+    const key = currentProduct.code;
+    if (!unknownCounts[key]) unknownCounts[key] = { code: key, name: currentProduct.name, qty: 0 };
+    unknownCounts[key].name = currentProduct.name;
+    unknownCounts[key].qty  = qty;
+    try { localStorage.setItem('stock_unknown', JSON.stringify(unknownCounts)); } catch(e) {}
+    showToast(`📝 บันทึก "${currentProduct.name}" — ${qty} ชิ้น`, 'warn');
+  } else {
+    counts[currentProduct.code] = qty;
+    save();
+    const diff = isNaN(parseInt(currentProduct.systemQty)) ? null : qty - parseInt(currentProduct.systemQty);
+    if (diff === null) showToast('💾 บันทึกแล้ว', 'ok');
+    else if (diff === 0) showToast('✅ ยอดตรง! บันทึกแล้ว', 'ok');
+    else showToast(`⚠️ ต่าง ${diff > 0 ? '+' : ''}${diff} ชิ้น — บันทึกแล้ว`, 'warn');
+  }
   cancelScan();
 }
 
@@ -1192,7 +1405,6 @@ function renderList() {
 
   let items = products.length ? products : Object.keys(counts).map(code => ({ code, name: '', category: '', systemQty: '—' }));
 
-  // Add uncounted
   const allCodes = new Set(products.map(p => p.code));
   Object.keys(counts).forEach(code => { if (!allCodes.has(code)) items.push({ code, name: '(ไม่มีในระบบ)', category: '', systemQty: '—' }); });
 
@@ -1209,28 +1421,76 @@ function renderList() {
 
   if (!items.length) {
     document.getElementById('list-container').innerHTML = `<div class="empty-state"><div class="em-icon">🔍</div><div class="em-text">ไม่พบรายการ</div></div>`;
-    return;
+  } else {
+    document.getElementById('list-container').innerHTML = `
+      <div class="table-wrap">
+        <table>
+          <tr><th>รหัส</th><th>ชื่อ</th><th>ระบบ</th><th>นับ</th><th>ต่าง</th></tr>
+          ${items.map(p => {
+            const cnt  = counts[p.code];
+            const sys  = parseInt(p.systemQty);
+            const diff = (cnt !== undefined && !isNaN(sys)) ? cnt - sys : null;
+            const dc   = diff === null ? 'd-none' : diff === 0 ? 'd-ok' : Math.abs(diff) <= 2 ? 'd-warn' : 'd-err';
+            return `<tr onclick="editCount('${p.code}')" style="cursor:pointer">
+              <td class="code-cell">${p.code}</td>
+              <td style="font-size:12px">${p.name || '—'}</td>
+              <td class="counted-cell" style="text-align:right">${isNaN(sys) ? '—' : sys}</td>
+              <td class="counted-cell" style="text-align:right">${cnt !== undefined ? cnt : '<span style="color:var(--muted)">—</span>'}</td>
+              <td class="diff-cell ${dc}" style="text-align:right">${diff !== null ? (diff > 0 ? '+' : '') + diff : '—'}</td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>`;
   }
 
-  document.getElementById('list-container').innerHTML = `
-    <div class="table-wrap">
-      <table>
-        <tr><th>รหัส</th><th>ชื่อ</th><th>ระบบ</th><th>นับ</th><th>ต่าง</th></tr>
-        ${items.map(p => {
-          const cnt  = counts[p.code];
-          const sys  = parseInt(p.systemQty);
-          const diff = (cnt !== undefined && !isNaN(sys)) ? cnt - sys : null;
-          const dc   = diff === null ? 'd-none' : diff === 0 ? 'd-ok' : Math.abs(diff) <= 2 ? 'd-warn' : 'd-err';
-          return `<tr onclick="editCount('${p.code}')" style="cursor:pointer">
-            <td class="code-cell">${p.code}</td>
-            <td style="font-size:12px">${p.name || '—'}</td>
-            <td class="counted-cell" style="text-align:right">${isNaN(sys) ? '—' : sys}</td>
-            <td class="counted-cell" style="text-align:right">${cnt !== undefined ? cnt : '<span style="color:var(--muted)">—</span>'}</td>
-            <td class="diff-cell ${dc}" style="text-align:right">${diff !== null ? (diff > 0 ? '+' : '') + diff : '—'}</td>
-          </tr>`;
-        }).join('')}
-      </table>
-    </div>`;
+  // Unknown section
+  renderUnknown();
+}
+
+function renderUnknown() {
+  const items = Object.values(unknownCounts);
+  const sec = document.getElementById('unknown-section');
+  if (!items.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  document.getElementById('unknown-table').innerHTML = `
+    <table>
+      <tr><th>Barcode</th><th>ชื่อที่กรอก</th><th>ยอดนับ</th><th></th></tr>
+      ${items.map(p => `
+        <tr>
+          <td class="code-cell">${p.code}</td>
+          <td style="font-size:12px">${p.name}</td>
+          <td class="counted-cell" style="text-align:right">${p.qty}</td>
+          <td style="text-align:right">
+            <span onclick="editUnknown('${p.code}')" style="color:var(--accent);cursor:pointer;font-size:12px">แก้</span>
+          </td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+function editUnknown(code) {
+  const item = unknownCounts[code];
+  if (!item) return;
+  currentProduct = { code, name: item.name, category: '—', systemQty: '—', unknown: true };
+  switchTab('scan');
+  document.getElementById('r-code').textContent = code;
+  document.getElementById('r-name').textContent = '(ไม่พบในระบบ)';
+  document.getElementById('r-name').style.color = 'var(--yellow)';
+  document.getElementById('r-custom-wrap').style.display = 'block';
+  document.getElementById('r-meta').style.display = 'none';
+  document.getElementById('r-custom-name').value = item.name;
+  document.getElementById('qty-input').value = item.qty;
+  document.getElementById('diff-display').innerHTML = '';
+  document.getElementById('result-card').classList.add('show');
+  document.getElementById('manual-fallback').style.display = 'none';
+}
+
+function clearUnknown() {
+  if (!confirm('ล้างรายการนอกระบบทั้งหมด?')) return;
+  unknownCounts = {};
+  try { localStorage.removeItem('stock_unknown'); } catch(e) {}
+  renderUnknown();
+  showToast('ล้างแล้ว', 'warn');
+}
 }
 
 function editCount(code) {
@@ -1302,6 +1562,16 @@ function exportCSV() {
     const status = diff === '' ? 'ยังไม่นับ' : diff === 0 ? 'ตรง' : diff > 0 ? 'เกิน' : 'ขาด';
     rows.push([p.code, p.name, p.category, isNaN(sys) ? '' : sys, cnt ?? '', diff, status, currentZone, currentUser]);
   });
+
+  // Append unknown products
+  const unknownItems = Object.values(unknownCounts);
+  if (unknownItems.length) {
+    rows.push([]); // blank row separator
+    rows.push(['--- รายการนอกระบบ (ต้องปรับทีหลัง) ---']);
+    unknownItems.forEach(p => {
+      rows.push([p.code, p.name, '', '', p.qty, '', 'นอกระบบ', currentZone, currentUser]);
+    });
+  }
 
   const csv = rows.map(r => r.join(',')).join('\n');
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
